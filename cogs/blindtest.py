@@ -40,11 +40,9 @@ YTDLP_OPTS = {
     "noplaylist": True,
 }
 
-# Options FFmpeg : commence 30 secondes après le début pour éviter les intros
+# Options FFmpeg
 FFMPEG_OPTS = {
-    "before_options": (
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 30"
-    ),
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
 }
 
@@ -99,11 +97,10 @@ def _check_guess(guess: str, answer: str) -> bool:
     return matched >= max(1, len(words) * 0.6)
 
 
-async def _get_audio_url(artist: str, title: str) -> tuple[str, str] | None:
+async def _get_audio_url(artist: str, title: str) -> str | None:
     """
-    Cherche la chanson sur YouTube avec yt-dlp.
-    Retourne (url, ffmpeg_headers) ou None.
-    Les headers sont nécessaires pour éviter les 403 de YouTube côté FFmpeg.
+    Cherche la chanson sur YouTube avec yt-dlp et retourne l'URL audio directe.
+    Exécuté dans un thread pour ne pas bloquer la boucle asyncio.
     """
     try:
         import yt_dlp
@@ -116,35 +113,23 @@ async def _get_audio_url(artist: str, title: str) -> tuple[str, str] | None:
         f"ytsearch1:{artist} {title} lyrics",
     ]
 
-    def _try_extract(q: str) -> tuple[str, str] | None:
+    def _try_extract(q: str) -> str | None:
         try:
             with yt_dlp.YoutubeDL(YTDLP_OPTS) as ydl:
                 info = ydl.extract_info(q, download=False)
-                entry = None
                 if info and "entries" in info and info["entries"]:
-                    entry = info["entries"][0]
-                elif info and "url" in info:
-                    entry = info
-                if not entry:
-                    return None
-                url = entry.get("url")
-                if not url:
-                    return None
-                # Formate les headers pour FFmpeg : "Key: Value\r\n..."
-                raw_headers = entry.get("http_headers", {})
-                headers_str = "".join(
-                    f"{k}: {v}\r\n" for k, v in raw_headers.items()
-                )
-                return url, headers_str
+                    return info["entries"][0].get("url")
+                if info and "url" in info:
+                    return info.get("url")
         except Exception:
             pass
         return None
 
-    def _extract() -> tuple[str, str] | None:
+    def _extract() -> str | None:
         for q in queries:
-            result = _try_extract(q)
-            if result:
-                return result
+            url = _try_extract(q)
+            if url:
+                return url
         logger.warning(f"yt-dlp: aucun format disponible pour '{artist} - {title}'")
         return None
 
@@ -216,8 +201,6 @@ async def _run_blindtest(
                 await asyncio.sleep(3)
                 continue
 
-            url, headers_str = result
-
             # Met à jour avec l'embed de jeu
             play_embed = discord.Embed(
                 title=f"🎵 Manche {round_num}/{nb_rounds}",
@@ -227,16 +210,9 @@ async def _run_blindtest(
             play_embed.set_footer(text="⏱️ 30 secondes pour répondre !")
             await round_msg.edit(embed=play_embed)
 
-            # Lance l'audio avec les headers pour éviter le 403 YouTube
+            # Lance l'audio
             try:
-                ffmpeg_opts = {
-                    "before_options": (
-                        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 30"
-                        + (f" -headers '{headers_str}'" if headers_str else "")
-                    ),
-                    "options": "-vn",
-                }
-                source = discord.FFmpegPCMAudio(url, executable=FFMPEG_EXE, **ffmpeg_opts)
+                source = discord.FFmpegPCMAudio(url, executable=FFMPEG_EXE, **FFMPEG_OPTS)
                 voice_client.play(discord.PCMVolumeTransformer(source, volume=0.6))
             except Exception as e:
                 logger.error(f"FFmpeg error: {e}")
