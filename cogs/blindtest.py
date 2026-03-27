@@ -113,15 +113,27 @@ async def _get_audio_url(artist: str, title: str) -> str | None:
     query = f"ytsearch1:{artist} - {title}"
 
     def _extract() -> str | None:
-        try:
-            with yt_dlp.YoutubeDL(YTDLP_OPTS) as ydl:
-                info = ydl.extract_info(query, download=False)
-                if info and "entries" in info and info["entries"]:
-                    return info["entries"][0].get("url")
-                if info and "url" in info:
-                    return info.get("url")
-        except Exception as e:
-            logger.warning(f"yt-dlp error for '{query}': {e}")
+        # Essaie plusieurs formats en cascade (certaines vidéos n'ont pas de stream audio séparé)
+        formats_to_try = [
+            "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
+            "bestaudio/best",
+            "best",
+        ]
+        for fmt in formats_to_try:
+            try:
+                opts = {**YTDLP_OPTS, "format": fmt}
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(query, download=False)
+                    url = None
+                    if info and "entries" in info and info["entries"]:
+                        url = info["entries"][0].get("url")
+                    elif info and "url" in info:
+                        url = info.get("url")
+                    if url:
+                        return url
+            except Exception:
+                continue
+        logger.warning(f"yt-dlp: aucun format disponible pour '{query}'")
         return None
 
     loop = asyncio.get_event_loop()
