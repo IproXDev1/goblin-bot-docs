@@ -18,14 +18,18 @@ from discord.ext import commands
 from utils import db
 from utils.embeds import error_embed, success_embed
 
-# FFmpeg embarqué via imageio-ffmpeg (pas besoin d'installation système)
+# FFmpeg — static-ffmpeg en priorité (binaire récent), fallback imageio-ffmpeg
 try:
-    import imageio_ffmpeg
-    FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
-    logger_tmp = logging.getLogger("goblin_bot.blindtest")
-    logger_tmp.info(f"FFmpeg trouvé via imageio-ffmpeg: {FFMPEG_EXE}")
-except ImportError:
-    FFMPEG_EXE = "ffmpeg"  # Fallback sur ffmpeg système
+    from static_ffmpeg import run as _sf
+    FFMPEG_EXE, _ = _sf.get_or_fetch_platform_executables_else_raise()
+    logging.getLogger("goblin_bot.blindtest").info(f"FFmpeg via static-ffmpeg: {FFMPEG_EXE}")
+except Exception:
+    try:
+        import imageio_ffmpeg
+        FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+        logging.getLogger("goblin_bot.blindtest").info(f"FFmpeg via imageio-ffmpeg: {FFMPEG_EXE}")
+    except ImportError:
+        FFMPEG_EXE = "ffmpeg"
 
 logger = logging.getLogger("goblin_bot.blindtest")
 
