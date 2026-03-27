@@ -34,11 +34,10 @@ _active_sessions: dict[int, dict] = {}
 
 # Options yt-dlp
 YTDLP_OPTS = {
-    "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+    "format": "bestaudio/best",
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,
-    "extractor_retries": 3,
 }
 
 # Options FFmpeg : commence 30 secondes après le début pour éviter les intros
@@ -100,40 +99,53 @@ def _check_guess(guess: str, answer: str) -> bool:
     return matched >= max(1, len(words) * 0.6)
 
 
-async def _get_audio_url(artist: str, title: str) -> str | None:
+async def _get_audio_url(artist: str, title: str) -> tuple[str, str] | None:
     """
-    Cherche la chanson sur YouTube avec yt-dlp et retourne l'URL audio directe.
-    Exécuté dans un thread pour ne pas bloquer la boucle asyncio.
+    Cherche la chanson sur YouTube avec yt-dlp.
+    Retourne (url, ffmpeg_headers) ou None.
+    Les headers sont nécessaires pour éviter les 403 de YouTube côté FFmpeg.
     """
     try:
         import yt_dlp
     except ImportError:
         return None
 
-    query = f"ytsearch1:{artist} - {title}"
+    queries = [
+        f"ytsearch1:{artist} - {title}",
+        f"ytsearch1:{artist} {title} audio",
+        f"ytsearch1:{artist} {title} lyrics",
+    ]
 
-    def _extract() -> str | None:
-        # Essaie plusieurs formats en cascade (certaines vidéos n'ont pas de stream audio séparé)
-        formats_to_try = [
-            "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
-            "bestaudio/best",
-            "best",
-        ]
-        for fmt in formats_to_try:
-            try:
-                opts = {**YTDLP_OPTS, "format": fmt}
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(query, download=False)
-                    url = None
-                    if info and "entries" in info and info["entries"]:
-                        url = info["entries"][0].get("url")
-                    elif info and "url" in info:
-                        url = info.get("url")
-                    if url:
-                        return url
-            except Exception:
-                continue
-        logger.warning(f"yt-dlp: aucun format disponible pour '{query}'")
+    def _try_extract(q: str) -> tuple[str, str] | None:
+        try:
+            with yt_dlp.YoutubeDL(YTDLP_OPTS) as ydl:
+                info = ydl.extract_info(q, download=False)
+                entry = None
+                if info and "entries" in info and info["entries"]:
+                    entry = info["entries"][0]
+                elif info and "url" in info:
+                    entry = info
+                if not entry:
+                    return None
+                url = entry.get("url")
+                if not url:
+                    return None
+                # Formate les headers pour FFmpeg : "Key: Value\r\n..."
+                raw_headers = entry.get("http_headers", {})
+                headers_str = "".join(
+                    f"{k}: {v}\r\n" for k, v in raw_headers.items()
+                )
+                return url, headers_str
+        except Exception:
+            pass
+        return None
+
+    def _extract() -> tuple[str, str] | None:
+        for q in queries:
+            result = _try_extract(q)
+            if result:
+                return result
+        logger.warning(f"yt-dlp: aucun format disponible pour '{artist} - {title}'")
         return None
 
     loop = asyncio.get_event_loop()
@@ -142,7 +154,7 @@ async def _get_audio_url(artist: str, title: str) -> str | None:
             loop.run_in_executor(None, _extract), timeout=20.0
         )
     except asyncio.TimeoutError:
-        logger.warning(f"yt-dlp timeout for '{query}'")
+        logger.warning(f"yt-dlp timeout pour '{artist} - {title}'")
         return None
 
 
@@ -191,10 +203,10 @@ async def _run_blindtest(
             )
             round_msg = await text_channel.send(embed=loading_embed)
 
-            # Récupère l'URL audio
-            url = await _get_audio_url(song["artist"], song["title"])
+            # Récupère l'URL audio + headers
+            result = await _get_audio_url(song["artist"], song["title"])
 
-            if not url:
+            if not result:
                 skip_embed = discord.Embed(
                     title=f"⚠️ Manche {round_num}/{nb_rounds} — Skip",
                     description=f"Impossible de charger **{song['artist']} - {song['title']}**.\nPassage à la suite !",
@@ -203,6 +215,8 @@ async def _run_blindtest(
                 await round_msg.edit(embed=skip_embed)
                 await asyncio.sleep(3)
                 continue
+
+            url, headers_str = result
 
             # Met à jour avec l'embed de jeu
             play_embed = discord.Embed(
@@ -213,9 +227,16 @@ async def _run_blindtest(
             play_embed.set_footer(text="⏱️ 30 secondes pour répondre !")
             await round_msg.edit(embed=play_embed)
 
-            # Lance l'audio
+            # Lance l'audio avec les headers pour éviter le 403 YouTube
             try:
-                source = discord.FFmpegPCMAudio(url, executable=FFMPEG_EXE, **FFMPEG_OPTS)
+                ffmpeg_opts = {
+                    "before_options": (
+                        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 30"
+                        + (f" -headers '{headers_str}'" if headers_str else "")
+                    ),
+                    "options": "-vn",
+                }
+                source = discord.FFmpegPCMAudio(url, executable=FFMPEG_EXE, **ffmpeg_opts)
                 voice_client.play(discord.PCMVolumeTransformer(source, volume=0.6))
             except Exception as e:
                 logger.error(f"FFmpeg error: {e}")
