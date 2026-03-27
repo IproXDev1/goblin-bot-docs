@@ -188,10 +188,10 @@ async def _run_blindtest(
             )
             round_msg = await text_channel.send(embed=loading_embed)
 
-            # Récupère l'URL audio + headers
-            result = await _get_audio_url(song["artist"], song["title"])
+            # Récupère l'URL audio
+            url = await _get_audio_url(song["artist"], song["title"])
 
-            if not result:
+            if not url:
                 skip_embed = discord.Embed(
                     title=f"⚠️ Manche {round_num}/{nb_rounds} — Skip",
                     description=f"Impossible de charger **{song['artist']} - {song['title']}**.\nPassage à la suite !",
